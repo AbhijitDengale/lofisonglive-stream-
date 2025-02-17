@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 
 const server = express()
-const streamkey = 'wk7s-yxz0-ama6-amsm-8ygh';
+const streamkey = 'wk7s-yxz0-ama6-amsm-8ygh'; // Update the stream key
 
 // Media directory setup
 const isDocker = fs.existsSync('/.dockerenv');
@@ -206,22 +206,15 @@ async function startStreaming() {
 startStreaming();
 
 // Setup express server
-server.get('/', (req, res) => {
-    res.send('Live Streaming Running - Single Video with Random Audio')
+server.get('/health', (req, res) => {
+    res.status(200).json({ status: 'healthy' });
 });
 
-server.get('/health', (req, res) => {
-    res.status(200).json({ 
-        status: 'healthy',
-        currentAudio: path.basename(audioFiles[currentAudioIndex]),
-        video: path.basename(videoFile),
-        isDocker: isDocker,
-        mediaDir: mediaDir,
-        retryCount: retryCount
-    });
+server.get('/', (req, res) => {
+    res.send('YouTube Live Stream is running');
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`Live stream server is ready on port ${PORT}`)
+    console.log(`Server is running on port ${PORT}`);
 });

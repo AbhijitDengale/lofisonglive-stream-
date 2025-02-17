@@ -2,10 +2,11 @@
   "name": "youtube-live-streaming",
   "version": "1.0.0",
   "type": "module",
-  "description": "This is a simple node js code to create live streaming on YouTube 24/7 hours with ffempg",
+  "description": "24/7 YouTube live streaming with lofi music",
   "main": "main.js",
   "scripts": {
     "start": "node main.js",
+    "dev": "node main.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "Imamwahyu",
@@ -13,5 +14,8 @@
   "dependencies": {
     "dotenv": "^16.3.1",
     "express": "^4.18.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

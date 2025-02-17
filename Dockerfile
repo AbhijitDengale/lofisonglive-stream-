@@ -18,10 +18,7 @@ COPY package*.json ./
 # Install dependencies
 RUN npm install
 
-# Copy media files first
-COPY *.mp3 *.mp4 ./media/
-
-# Copy remaining app source
+# Copy all files
 COPY . .
 
 # Set permissions
@@ -31,4 +28,4 @@ RUN chmod -R 755 /usr/src/app
 EXPOSE 3000
 
 # Start the application
-CMD [ "node", "main.js" ]
+CMD ["node", "main.js"]
