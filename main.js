@@ -56,7 +56,7 @@ async function checkFFmpeg() {
 
 // Function to create FFmpeg command for video with audio
 function createFFmpegCommand(audioFile) {
-    // Base FFmpeg options
+    // Base FFmpeg options with improved settings
     const options = [
         '-re',                     // Read input at native frame rate
         '-stream_loop', '-1',      // Loop video indefinitely
@@ -68,51 +68,56 @@ function createFFmpegCommand(audioFile) {
         '-c:v', 'libx264',         // Video codec
         '-preset', 'veryfast',     // Encoding preset
         '-tune', 'zerolatency',    // Tune for streaming
-        '-profile:v', 'baseline',  // H.264 profile (changed to baseline for better compatibility)
-        '-level', '3.0',           // H.264 level (changed for better compatibility)
+        '-profile:v', 'baseline',  // H.264 profile
+        '-level', '3.0',           // H.264 level
         '-pix_fmt', 'yuv420p',     // Pixel format
         
         // Video quality settings
-        '-b:v', '2000k',           // Video bitrate (reduced for stability)
-        '-bufsize', '4000k',       // Buffer size
-        '-maxrate', '2000k',       // Maximum bitrate
+        '-b:v', '2500k',           // Video bitrate
+        '-minrate', '2500k',       // Minimum bitrate
+        '-maxrate', '2500k',       // Maximum bitrate
+        '-bufsize', '5000k',       // Buffer size
         '-r', '30',                // Frame rate
         '-g', '60',                // Keyframe interval
         '-keyint_min', '60',       // Minimum keyframe interval
+        '-force_key_frames', 'expr:gte(t,n_forced*2)', // Force keyframe every 2 seconds
         
         // Audio encoding settings
         '-c:a', 'aac',             // Audio codec
-        '-b:a', '128k',            // Audio bitrate
+        '-b:a', '160k',            // Audio bitrate
         '-ar', '44100',            // Audio sample rate
         '-af', 'aresample=async=1000', // Audio resampling for sync
         
         // Output settings
-        '-shortest',               // End when shortest input ends
-        '-max_muxing_queue_size', '1024', // Increase muxing queue
+        '-preset', 'veryfast',     // Use very fast preset for lower latency
+        '-maxrate', '2500k',       // Ensure consistent bitrate
+        '-bufsize', '5000k',       // Double of maxrate for buffer
         '-f', 'flv',               // Output format
+        
+        // Stream optimization
+        '-threads', '4',           // Use 4 threads for encoding
+        '-cpu-used', '5',          // CPU usage preset (0-5, higher = faster)
+        '-quality', 'realtime',    // Optimize for realtime streaming
         
         // Map streams
         '-map', '0:v:0',           // Map video from first input
         '-map', '1:a:0',           // Map audio from second input
     ];
 
-    // Add different RTMP endpoints to try
-    const rtmpEndpoints = [
-        `rtmp://x.rtmp.youtube.com/live2/${streamkey}`,
-        `rtmp://a.rtmp.youtube.com/live2/${streamkey}`,
-        `rtmp://b.rtmp.youtube.com/live2/${streamkey}`
-    ];
+    // Add RTMP endpoint
+    const rtmpUrl = 'rtmp://x.rtmp.youtube.com/live2';
+    const endpoint = `${rtmpUrl}/${streamkey}`;
 
     return {
         command: 'ffmpeg',
-        args: [...options, rtmpEndpoints[0]], // Start with first endpoint
-        endpoints: rtmpEndpoints
+        args: [...options, endpoint],
+        endpoint: endpoint
     };
 }
 
-let currentEndpointIndex = 0;
 let retryCount = 0;
-const MAX_RETRIES = 3;
+const MAX_RETRIES = 5;
+const RETRY_DELAY = 5000;
 
 // Function to start streaming
 async function startStreaming() {
@@ -128,18 +133,24 @@ async function startStreaming() {
         checkFiles();
 
         const audioFile = getNextAudio();
-        const { command, args, endpoints } = createFFmpegCommand(audioFile);
+        const { command, args, endpoint } = createFFmpegCommand(audioFile);
         
         console.log(`Starting stream with video: ${path.basename(videoFile)} and audio: ${path.basename(audioFile)}`);
-        console.log(`Using RTMP endpoint: ${endpoints[currentEndpointIndex]}`);
+        console.log(`Using RTMP endpoint: ${endpoint}`);
         
-        const child = spawn(command, [...args.slice(0, -1), endpoints[currentEndpointIndex]]);
+        const child = spawn(command, args);
 
         let lastErrorTime = 0;
         const errorThrottleMs = 5000;
+        let isConnected = false;
 
         child.stdout.on('data', (data) => {
-            console.log(`stdout: ${data}`);
+            const output = data.toString();
+            console.log(`stdout: ${output}`);
+            if (output.includes('Connected')) {
+                isConnected = true;
+                retryCount = 0; // Reset retry count on successful connection
+            }
         });
 
         child.stderr.on('data', (data) => {
@@ -149,40 +160,45 @@ async function startStreaming() {
             if (now - lastErrorTime > errorThrottleMs) {
                 console.error(`stderr: ${errorMsg}`);
                 lastErrorTime = now;
+
+                // Check for specific error conditions
+                if (errorMsg.includes('Connection refused') || 
+                    errorMsg.includes('Connection timed out') ||
+                    errorMsg.includes('Error connecting')) {
+                    child.kill(); // Kill the process to trigger reconnect
+                }
             }
         });
 
         child.on('close', (code) => {
             console.log(`Stream ended with code ${code}`);
             
-            if (code !== 0) {
-                // Try next endpoint if current one fails
-                currentEndpointIndex = (currentEndpointIndex + 1) % endpoints.length;
+            if (!isConnected || code !== 0) {
                 retryCount++;
                 
-                if (retryCount >= MAX_RETRIES * endpoints.length) {
+                if (retryCount >= MAX_RETRIES) {
                     console.error('Max retries reached. Waiting longer before next attempt...');
                     retryCount = 0;
-                    setTimeout(startStreaming, 30000); // Wait 30 seconds
+                    setTimeout(startStreaming, RETRY_DELAY * 2);
                 } else {
-                    console.log(`Retrying with next endpoint: ${endpoints[currentEndpointIndex]}`);
-                    setTimeout(startStreaming, 5000);
+                    console.log(`Retry attempt ${retryCount}/${MAX_RETRIES}`);
+                    setTimeout(startStreaming, RETRY_DELAY);
                 }
             } else {
-                // Reset retry count on successful stream
-                retryCount = 0;
+                // If we were connected but stream ended, restart immediately
+                console.log('Stream ended normally, restarting...');
                 setTimeout(startStreaming, 1000);
             }
         });
 
         child.on('error', (err) => {
             console.error(`Child process error: ${err}`);
-            setTimeout(startStreaming, 5000);
+            setTimeout(startStreaming, RETRY_DELAY);
         });
 
     } catch (error) {
         console.error(`Streaming error: ${error.message}`);
-        setTimeout(startStreaming, 5000);
+        setTimeout(startStreaming, RETRY_DELAY);
     }
 }
 
@@ -200,7 +216,8 @@ server.get('/health', (req, res) => {
         currentAudio: path.basename(audioFiles[currentAudioIndex]),
         video: path.basename(videoFile),
         isDocker: isDocker,
-        mediaDir: mediaDir
+        mediaDir: mediaDir,
+        retryCount: retryCount
     });
 });
 
