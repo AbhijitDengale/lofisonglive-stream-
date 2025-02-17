@@ -9,20 +9,20 @@ RUN apt-get update && \
 # Create app directory
 WORKDIR /usr/src/app
 
+# Create media directory
+RUN mkdir -p /usr/src/app/media
+
 # Copy package files
 COPY package*.json ./
 
 # Install dependencies
 RUN npm install
 
-# Create media directory
-RUN mkdir -p /usr/src/app/media
+# Copy media files first
+COPY *.mp3 *.mp4 ./media/
 
-# Copy app source and media files
+# Copy remaining app source
 COPY . .
-
-# Make sure media files are in the correct location
-RUN mv *.mp3 *.mp4 media/ || true
 
 # Set permissions
 RUN chmod -R 755 /usr/src/app
