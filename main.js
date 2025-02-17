@@ -6,18 +6,22 @@ import path from 'path';
 const server = express()
 const streamkey = 'wk7s-yxz0-ama6-amsm-8ygh';
 
+// Media directory setup
+const isDocker = fs.existsSync('/.dockerenv');
+const mediaDir = isDocker ? '/usr/src/app/media' : process.cwd();
+
 // Video and audio files
-const videoFile = 'girl.mp4';
-const audioFiles = ['1.mp3', '2.mp3', '3.mp3', '4.mp3', '5.mp3', '6.mp3', '7.mp3'];
+const videoFile = path.join(mediaDir, 'girl.mp4');
+const audioFiles = ['1.mp3', '2.mp3', '3.mp3', '4.mp3', '5.mp3', '6.mp3', '7.mp3'].map(file => path.join(mediaDir, file));
 let currentAudioIndex = Math.floor(Math.random() * audioFiles.length);
 
 // Function to check if files exist
 function checkFiles() {
-    if (!fs.existsSync(path.join(process.cwd(), videoFile))) {
-        throw new Error('Video file not found');
+    if (!fs.existsSync(videoFile)) {
+        throw new Error(`Video file not found at ${videoFile}`);
     }
     
-    const missingAudio = audioFiles.filter(file => !fs.existsSync(path.join(process.cwd(), file)));
+    const missingAudio = audioFiles.filter(file => !fs.existsSync(file));
     if (missingAudio.length > 0) {
         throw new Error(`Missing audio files: ${missingAudio.join(', ')}`);
     }
@@ -32,8 +36,9 @@ function getNextAudio() {
     } while (newIndex === currentAudioIndex && audioFiles.length > 1);
     
     currentAudioIndex = newIndex;
-    console.log(`Switching to audio: ${audioFiles[currentAudioIndex]}`);
-    return audioFiles[currentAudioIndex];
+    const audioFile = audioFiles[currentAudioIndex];
+    console.log(`Switching to audio: ${path.basename(audioFile)}`);
+    return audioFile;
 }
 
 // Function to check if ffmpeg is installed
@@ -51,8 +56,8 @@ async function checkFFmpeg() {
 
 // Function to create FFmpeg command for video with audio
 function createFFmpegCommand(audioFile) {
-    return [
-        'ffmpeg',
+    // Base FFmpeg options
+    const options = [
         '-re',                     // Read input at native frame rate
         '-stream_loop', '-1',      // Loop video indefinitely
         '-i', videoFile,           // Video input
@@ -61,27 +66,23 @@ function createFFmpegCommand(audioFile) {
         
         // Video encoding settings
         '-c:v', 'libx264',         // Video codec
-        '-preset', 'veryfast',     // Encoding preset (changed from ultrafast for better quality)
+        '-preset', 'veryfast',     // Encoding preset
         '-tune', 'zerolatency',    // Tune for streaming
-        '-profile:v', 'main',      // H.264 profile
-        '-level', '4.0',           // H.264 level
-        '-pix_fmt', 'yuv420p',     // Pixel format (fixed from yuvj420p)
-        '-color_range', '1',       // Force color range
-        '-colorspace', 'bt709',    // Color space
-        '-color_primaries', 'bt709',
-        '-color_trc', 'bt709',
+        '-profile:v', 'baseline',  // H.264 profile (changed to baseline for better compatibility)
+        '-level', '3.0',           // H.264 level (changed for better compatibility)
+        '-pix_fmt', 'yuv420p',     // Pixel format
         
         // Video quality settings
-        '-b:v', '2500k',           // Video bitrate
-        '-bufsize', '5000k',       // Buffer size
-        '-maxrate', '2500k',       // Maximum bitrate
+        '-b:v', '2000k',           // Video bitrate (reduced for stability)
+        '-bufsize', '4000k',       // Buffer size
+        '-maxrate', '2000k',       // Maximum bitrate
         '-r', '30',                // Frame rate
         '-g', '60',                // Keyframe interval
         '-keyint_min', '60',       // Minimum keyframe interval
         
         // Audio encoding settings
         '-c:a', 'aac',             // Audio codec
-        '-b:a', '192k',            // Audio bitrate
+        '-b:a', '128k',            // Audio bitrate
         '-ar', '44100',            // Audio sample rate
         '-af', 'aresample=async=1000', // Audio resampling for sync
         
@@ -93,11 +94,25 @@ function createFFmpegCommand(audioFile) {
         // Map streams
         '-map', '0:v:0',           // Map video from first input
         '-map', '1:a:0',           // Map audio from second input
-        
-        // YouTube RTMP endpoint (using x instead of a)
-        `rtmp://x.rtmp.youtube.com/live2/${streamkey}`
     ];
+
+    // Add different RTMP endpoints to try
+    const rtmpEndpoints = [
+        `rtmp://x.rtmp.youtube.com/live2/${streamkey}`,
+        `rtmp://a.rtmp.youtube.com/live2/${streamkey}`,
+        `rtmp://b.rtmp.youtube.com/live2/${streamkey}`
+    ];
+
+    return {
+        command: 'ffmpeg',
+        args: [...options, rtmpEndpoints[0]], // Start with first endpoint
+        endpoints: rtmpEndpoints
+    };
 }
+
+let currentEndpointIndex = 0;
+let retryCount = 0;
+const MAX_RETRIES = 3;
 
 // Function to start streaming
 async function startStreaming() {
@@ -113,13 +128,15 @@ async function startStreaming() {
         checkFiles();
 
         const audioFile = getNextAudio();
-        const ffmpegCommand = createFFmpegCommand(audioFile);
+        const { command, args, endpoints } = createFFmpegCommand(audioFile);
         
-        console.log(`Starting stream with video: ${videoFile} and audio: ${audioFile}`);
-        const child = spawn(ffmpegCommand[0], ffmpegCommand.slice(1));
+        console.log(`Starting stream with video: ${path.basename(videoFile)} and audio: ${path.basename(audioFile)}`);
+        console.log(`Using RTMP endpoint: ${endpoints[currentEndpointIndex]}`);
+        
+        const child = spawn(command, [...args.slice(0, -1), endpoints[currentEndpointIndex]]);
 
         let lastErrorTime = 0;
-        const errorThrottleMs = 5000; // Throttle similar errors
+        const errorThrottleMs = 5000;
 
         child.stdout.on('data', (data) => {
             console.log(`stdout: ${data}`);
@@ -129,7 +146,6 @@ async function startStreaming() {
             const now = Date.now();
             const errorMsg = data.toString();
             
-            // Only log errors if they're not too frequent
             if (now - lastErrorTime > errorThrottleMs) {
                 console.error(`stderr: ${errorMsg}`);
                 lastErrorTime = now;
@@ -138,19 +154,34 @@ async function startStreaming() {
 
         child.on('close', (code) => {
             console.log(`Stream ended with code ${code}`);
-            // Change audio and restart stream
-            setTimeout(startStreaming, 1000);
+            
+            if (code !== 0) {
+                // Try next endpoint if current one fails
+                currentEndpointIndex = (currentEndpointIndex + 1) % endpoints.length;
+                retryCount++;
+                
+                if (retryCount >= MAX_RETRIES * endpoints.length) {
+                    console.error('Max retries reached. Waiting longer before next attempt...');
+                    retryCount = 0;
+                    setTimeout(startStreaming, 30000); // Wait 30 seconds
+                } else {
+                    console.log(`Retrying with next endpoint: ${endpoints[currentEndpointIndex]}`);
+                    setTimeout(startStreaming, 5000);
+                }
+            } else {
+                // Reset retry count on successful stream
+                retryCount = 0;
+                setTimeout(startStreaming, 1000);
+            }
         });
 
         child.on('error', (err) => {
             console.error(`Child process error: ${err}`);
-            // Attempt to restart on error
             setTimeout(startStreaming, 5000);
         });
 
     } catch (error) {
         console.error(`Streaming error: ${error.message}`);
-        // Attempt to restart on error
         setTimeout(startStreaming, 5000);
     }
 }
@@ -166,8 +197,10 @@ server.get('/', (req, res) => {
 server.get('/health', (req, res) => {
     res.status(200).json({ 
         status: 'healthy',
-        currentAudio: audioFiles[currentAudioIndex],
-        video: videoFile
+        currentAudio: path.basename(audioFiles[currentAudioIndex]),
+        video: path.basename(videoFile),
+        isDocker: isDocker,
+        mediaDir: mediaDir
     });
 });
 
