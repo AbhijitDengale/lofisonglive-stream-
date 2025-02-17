@@ -8,7 +8,7 @@ const streamkey = 'wk7s-yxz0-ama6-amsm-8ygh';
 
 // Video and audio files
 const videoFile = 'girl.mp4';
-const audioFiles = ['1.mp3', '2.mp3', '3.mp3', '4.mp3', '5.mp3', '6.mp3' ,'7.mp3'];
+const audioFiles = ['1.mp3', '2.mp3', '3.mp3', '4.mp3', '5.mp3', '6.mp3', '7.mp3'];
 let currentAudioIndex = Math.floor(Math.random() * audioFiles.length);
 
 // Function to check if files exist
@@ -26,7 +26,6 @@ function checkFiles() {
 
 // Function to get next random audio file
 function getNextAudio() {
-    // Get a random index different from the current one
     let newIndex;
     do {
         newIndex = Math.floor(Math.random() * audioFiles.length);
@@ -54,26 +53,49 @@ async function checkFFmpeg() {
 function createFFmpegCommand(audioFile) {
     return [
         'ffmpeg',
-        '-re',
-        '-stream_loop', '-1',  // Loop video indefinitely
-        '-i', videoFile,       // Video input
-        '-stream_loop', '-1',  // Loop audio indefinitely
-        '-i', audioFile,       // Audio input
-        '-c:v', 'libx264',     // Video codec
-        '-pix_fmt', 'yuvj420p',
-        '-maxrate', '2048k',
-        '-preset', 'ultrafast',
-        '-r', '30',            // Frame rate
-        '-g', '60',
-        '-c:a', 'aac',         // Audio codec
-        '-b:a', '128k',        // Audio bitrate
-        '-strict', 'experimental',
-        '-shortest',           // End when shortest input ends
-        '-map', '0:v:0',       // Map video from first input
-        '-map', '1:a:0',       // Map audio from second input
-        '-b:v', '1500k',
-        '-f', 'flv',
-        `rtmp://a.rtmp.youtube.com/live2/${streamkey}`
+        '-re',                     // Read input at native frame rate
+        '-stream_loop', '-1',      // Loop video indefinitely
+        '-i', videoFile,           // Video input
+        '-stream_loop', '-1',      // Loop audio indefinitely
+        '-i', audioFile,           // Audio input
+        
+        // Video encoding settings
+        '-c:v', 'libx264',         // Video codec
+        '-preset', 'veryfast',     // Encoding preset (changed from ultrafast for better quality)
+        '-tune', 'zerolatency',    // Tune for streaming
+        '-profile:v', 'main',      // H.264 profile
+        '-level', '4.0',           // H.264 level
+        '-pix_fmt', 'yuv420p',     // Pixel format (fixed from yuvj420p)
+        '-color_range', '1',       // Force color range
+        '-colorspace', 'bt709',    // Color space
+        '-color_primaries', 'bt709',
+        '-color_trc', 'bt709',
+        
+        // Video quality settings
+        '-b:v', '2500k',           // Video bitrate
+        '-bufsize', '5000k',       // Buffer size
+        '-maxrate', '2500k',       // Maximum bitrate
+        '-r', '30',                // Frame rate
+        '-g', '60',                // Keyframe interval
+        '-keyint_min', '60',       // Minimum keyframe interval
+        
+        // Audio encoding settings
+        '-c:a', 'aac',             // Audio codec
+        '-b:a', '192k',            // Audio bitrate
+        '-ar', '44100',            // Audio sample rate
+        '-af', 'aresample=async=1000', // Audio resampling for sync
+        
+        // Output settings
+        '-shortest',               // End when shortest input ends
+        '-max_muxing_queue_size', '1024', // Increase muxing queue
+        '-f', 'flv',               // Output format
+        
+        // Map streams
+        '-map', '0:v:0',           // Map video from first input
+        '-map', '1:a:0',           // Map audio from second input
+        
+        // YouTube RTMP endpoint (using x instead of a)
+        `rtmp://x.rtmp.youtube.com/live2/${streamkey}`
     ];
 }
 
@@ -96,12 +118,22 @@ async function startStreaming() {
         console.log(`Starting stream with video: ${videoFile} and audio: ${audioFile}`);
         const child = spawn(ffmpegCommand[0], ffmpegCommand.slice(1));
 
+        let lastErrorTime = 0;
+        const errorThrottleMs = 5000; // Throttle similar errors
+
         child.stdout.on('data', (data) => {
             console.log(`stdout: ${data}`);
         });
 
         child.stderr.on('data', (data) => {
-            console.error(`stderr: ${data}`);
+            const now = Date.now();
+            const errorMsg = data.toString();
+            
+            // Only log errors if they're not too frequent
+            if (now - lastErrorTime > errorThrottleMs) {
+                console.error(`stderr: ${errorMsg}`);
+                lastErrorTime = now;
+            }
         });
 
         child.on('close', (code) => {
