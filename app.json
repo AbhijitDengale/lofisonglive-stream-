@@ -1,0 +1,20 @@
+{
+  "name": "youtube-live-streaming",
+  "repository": "https://github.com/hajilok/youtube-live-streaming",
+  "env": {
+    "streamkey": {
+      "description": "Secret Stream Key from YouTube",
+      "required": true
+    }
+  },
+  "buildpacks": [
+    {
+      "url": "heroku/nodejs"
+    }
+  ],
+  "formation": {
+    "web": {
+      "quantity": 1
+    }
+  }
+}
